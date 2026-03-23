@@ -97,7 +97,7 @@
                         <div id="fileList" class="mt-8 w-full max-sm space-y-3"></div>
                     </div>
 
-                    <button id="generateBtn" disabled onclick="generateProposal()" class="mt-8 w-full py-5 bg-blue-600 text-white rounded-[1.5rem] font-black text-sm uppercase tracking-widest shadow-xl disabled:bg-slate-200 transition-all active:scale-[0.98]">
+                    <button id="generateBtn" disabled onclick="window.initGenerationProcess()" class="mt-8 w-full py-5 bg-blue-600 text-white rounded-[1.5rem] font-black text-sm uppercase tracking-widest shadow-xl disabled:bg-slate-200 transition-all active:scale-[0.98]">
                         Generar Documento Maestro
                     </button>
                 </section>
@@ -109,12 +109,13 @@
         <div class="bg-white p-10 rounded-[3rem] text-center max-w-sm w-full shadow-2xl">
             <div class="loader w-20 h-20 mx-auto mb-8 border-4 border-t-blue-600 rounded-full"></div>
             <h3 class="text-xl font-black text-slate-900 mb-2">Procesando Inteligencia</h3>
-            <p class="text-slate-500 text-sm font-medium">Investigando aseguradora y analizando UMAMs...</p>
+            <p id="loadingStatus" class="text-slate-500 text-sm font-medium">Investigando aseguradora y analizando UMAMs...</p>
         </div>
     </div>
 
-    <script type="module">
+    <script>
         const apiKey = ""; 
+
         let processedAgentLogo = null;
         let agentLogoColor = [37, 99, 235]; 
         let carrierLogoManual = null;
@@ -142,15 +143,18 @@
                     const ctx = canvas.getContext('2d');
                     canvas.width = 100; canvas.height = 100;
                     ctx.drawImage(img, 0, 0, 100, 100);
-                    const data = ctx.getImageData(0, 0, 100, 100).data;
-                    let r = 0, g = 0, b = 0, count = 0;
-                    for (let i = 0; i < data.length; i += 16) {
-                        if (data[i+3] > 200 && (data[i]+data[i+1]+data[i+2])/3 < 240) {
-                            r += data[i]; g += data[i+1]; b += data[i+2]; count++;
+                    try {
+                        const data = ctx.getImageData(0, 0, 100, 100).data;
+                        let r = 0, g = 0, b = 0, count = 0;
+                        for (let i = 0; i < data.length; i += 16) {
+                            if (data[i+3] > 200 && (data[i]+data[i+1]+data[i+2])/3 < 240) {
+                                r += data[i]; g += data[i+1]; b += data[i+2]; count++;
+                            }
                         }
-                    }
-                    resolve(count > 0 ? [Math.round(r/count), Math.round(g/count), Math.round(b/count)] : [37, 99, 235]);
+                        resolve(count > 0 ? [Math.round(r/count), Math.round(g/count), Math.round(b/count)] : [37, 99, 235]);
+                    } catch (e) { resolve([37, 99, 235]); }
                 };
+                img.onerror = () => resolve([37, 99, 235]);
                 img.src = base64Str;
             });
         }
@@ -163,14 +167,17 @@
                     canvas.width = img.width; canvas.height = img.height;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0);
-                    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    const data = imgData.data;
-                    for (let i = 0; i < data.length; i += 4) {
-                        if (data[i] > 240 && data[i+1] > 240 && data[i+2] > 240) data[i+3] = 0;
-                    }
-                    ctx.putImageData(imgData, 0, 0);
-                    resolve(canvas.toDataURL('image/png'));
+                    try {
+                        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        const data = imgData.data;
+                        for (let i = 0; i < data.length; i += 4) {
+                            if (data[i] > 240 && data[i+1] > 240 && data[i+2] > 240) data[i+3] = 0;
+                        }
+                        ctx.putImageData(imgData, 0, 0);
+                        resolve(canvas.toDataURL('image/png'));
+                    } catch (e) { resolve(base64Str); }
                 };
+                img.onerror = () => resolve(base64Str);
                 img.src = base64Str;
             });
         }
@@ -212,6 +219,7 @@
 
         function setupDropZone(id, inputId, callback) {
             const z = document.getElementById(id); const i = document.getElementById(inputId);
+            if(!z || !i) return;
             z.onclick = () => i.click();
             z.ondragover = (e) => { e.preventDefault(); z.classList.add('drop-zone--over'); };
             z.ondragleave = () => z.classList.remove('drop-zone--over');
@@ -233,15 +241,16 @@
             document.getElementById('generateBtn').disabled = fileContents.length === 0;
         }
 
-        window.generateProposal = async function() {
+        window.initGenerationProcess = async function() {
             setLoading(true);
             const explicitCarrier = document.getElementById('carrierName').value;
             try {
-                const prompt = `Analiza la cotización. 
+                const prompt = `Analiza la cotización detalladamente. 
                 REGLAS ESPECIALES:
                 1. Extrae equivalentes en UMAMs para: Suma Asegurada, Deducible, Tope Coaseguro y THQ si existen.
                 2. Investiga profundamente a la aseguradora "${explicitCarrier || 'la compañía mencionada'}". 
-                Redacta una reseña en 2 párrafos institucionales y de alto impacto que destaque su solidez financiera, especialización y compromiso.
+                Redacta una reseña en 2 párrafos institucionales y de alto impacto que destaque su solidez financiera y especialización.
+                3. Extrae la mayor cantidad posible de beneficios (mínimo 15 si están disponibles en el texto) para llenar la hoja.
 
                 Responde estrictamente en JSON:
                 {
@@ -279,206 +288,209 @@
                     })
                 });
 
+                if (!response.candidates?.[0]?.content?.parts?.[0]?.text) throw new Error("Respuesta de IA vacía");
                 analysisResults = JSON.parse(response.candidates[0].content.parts[0].text);
+                
+                document.getElementById('loadingStatus').innerText = "Generando estructura de PDF...";
                 await createPDF();
             } catch (e) { 
                 console.error(e);
-                alert("Error en el análisis."); 
+                alert("Error técnico: Asegúrate de estar conectado a internet y que el archivo cargado sea válido."); 
             } finally { setLoading(false); }
         };
 
         function setLoading(s) { document.getElementById('loadingOverlay').classList.toggle('hidden', !s); }
 
         async function createPDF() {
-            const { jsPDF } = window.jspdf;
-            const doc = new jsPDF('p', 'mm', 'a4');
-            const w = doc.internal.pageSize.getWidth();
-            const h = doc.internal.pageSize.getHeight();
-            
-            const agent = document.getElementById('agentName').value || "Agente Profesional";
-            const email = document.getElementById('agentEmail').value || "";
-            const phone = document.getElementById('agentPhone').value || "";
-            const type = document.getElementById('insuranceType').value;
-            const premium = document.getElementById('totalPremium').value || analysisResults.costoTotalAutomatico;
+            try {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF('p', 'mm', 'a4');
+                const w = doc.internal.pageSize.getWidth();
+                const h = doc.internal.pageSize.getHeight();
+                
+                const agent = document.getElementById('agentName').value || "Agente Profesional";
+                const email = document.getElementById('agentEmail').value || "";
+                const phone = document.getElementById('agentPhone').value || "";
+                const type = document.getElementById('insuranceType').value;
+                const premium = document.getElementById('totalPremium').value || (analysisResults?.costoTotalAutomatico || "$ 0.00");
 
-            const colorDark = [15, 23, 42];      
-            const colorAccent = agentLogoColor; 
-            const colorCard = [30, 41, 59];      
+                const colorDark = [15, 23, 42];      
+                const colorAccent = agentLogoColor || [37, 99, 235]; 
+                const colorCard = [30, 41, 59];      
 
-            const addLogo = async (img, x, y, maxW, maxH, align = 'left') => {
-                if (!img) return { w: 0, h: 0 };
-                return new Promise(res => {
-                    const i = new Image();
-                    i.onload = () => {
-                        let nw = i.width, nh = i.height;
-                        const r = nw / nh;
-                        if (nw > maxW) { nw = maxW; nh = nw / r; }
-                        if (nh > maxH) { nh = maxH; nw = nh * r; }
-                        let fx = x; 
-                        if (align === 'right') fx = x - nw; 
-                        if (align === 'center') fx = x - (nw / 2);
-                        doc.addImage(i, 'PNG', fx, y, nw, nh, undefined, 'FAST');
-                        res({ w: nw, h: nh });
-                    };
-                    i.onerror = () => res({ w: 0, h: 0 });
-                    i.src = img;
-                });
-            };
+                const addLogo = async (imgData, x, y, maxW, maxH, align = 'left') => {
+                    if (!imgData) return { w: 0, h: 0 };
+                    return new Promise(res => {
+                        const i = new Image();
+                        i.onload = () => {
+                            let nw = i.width, nh = i.height;
+                            const r = nw / nh;
+                            if (nw > maxW) { nw = maxW; nh = nw / r; }
+                            if (nh > maxH) { nh = maxH; nw = nh * r; }
+                            let fx = x; 
+                            if (align === 'right') fx = x - nw; 
+                            if (align === 'center') fx = x - (nw / 2);
+                            try {
+                                doc.addImage(i, 'PNG', fx, y, nw, nh, undefined, 'FAST');
+                            } catch (e) { console.warn("Error insertando imagen:", e); }
+                            res({ w: nw, h: nh });
+                        };
+                        i.onerror = () => res({ w: 0, h: 0 });
+                        i.src = imgData;
+                    });
+                };
 
-            const drawJustifiedText = (text, x, y, maxWidth) => {
-                if(!text) return y;
-                doc.setFont("helvetica", "normal");
-                const lines = doc.splitTextToSize(text, maxWidth);
-                lines.forEach((line, index) => {
-                    if (index < lines.length - 1) {
-                        const words = line.split(' ');
-                        const totalWordsWidth = words.reduce((acc, word) => acc + doc.getTextWidth(word), 0);
-                        const spaceWidth = (maxWidth - totalWordsWidth) / (words.length - 1);
-                        let currentX = x;
-                        words.forEach((word, wordIdx) => {
-                            doc.text(word, currentX, y);
-                            currentX += doc.getTextWidth(word) + (wordIdx < words.length - 1 ? spaceWidth : 0);
-                        });
-                    } else {
-                        doc.text(line, x, y);
+                const drawJustifiedText = (text, x, y, maxWidth) => {
+                    if(!text) return y;
+                    doc.setFont("helvetica", "normal");
+                    const lines = doc.splitTextToSize(text, maxWidth);
+                    lines.forEach((line, index) => {
+                        if (index < lines.length - 1) {
+                            const words = line.split(' ');
+                            const totalWordsWidth = words.reduce((acc, word) => acc + doc.getTextWidth(word), 0);
+                            const spaceWidth = (maxWidth - totalWordsWidth) / Math.max(1, words.length - 1);
+                            let currentX = x;
+                            words.forEach((word, wordIdx) => {
+                                doc.text(word, currentX, y);
+                                currentX += doc.getTextWidth(word) + (wordIdx < words.length - 1 ? spaceWidth : 0);
+                            });
+                        } else {
+                            doc.text(line, x, y);
+                        }
+                        y += 5.5;
+                    });
+                    return y;
+                };
+
+                // PORTADA
+                doc.setFillColor(...colorDark); doc.rect(0, 0, w, h, 'F');
+                if (processedAgentLogo) await addLogo(processedAgentLogo, 20, 15, 80, 40);
+                
+                const firstFile = fileContents[0];
+                const activeCarrierLogo = carrierLogoManual || (firstFile?.type.includes('image') ? firstFile.data : null);
+                if (activeCarrierLogo) await addLogo(activeCarrierLogo, w - 20, h - 45, 65, 30, 'right');
+
+                doc.setTextColor(255); doc.setFontSize(11); doc.setFont("helvetica", "bold");
+                doc.text("ESTRATEGIA DE PROTECCIÓN PATRIMONIAL", 20, 115);
+                doc.setFontSize(48); doc.text(type.toUpperCase(), 20, 140, { maxWidth: 160 });
+                doc.setFontSize(12); doc.setTextColor(148, 163, 184); doc.text("DISEÑADO EXCLUSIVAMENTE PARA:", 20, 185);
+                doc.setFontSize(32); doc.setTextColor(255); doc.text(String(analysisResults?.cliente?.nombre || "CLIENTE").toUpperCase(), 20, 200);
+
+                // PÁGINA 2
+                doc.addPage();
+                doc.setFillColor(...colorDark); doc.rect(0, 0, w, h, 'F');
+                if (processedAgentLogo) await addLogo(processedAgentLogo, 20, 15, 80, 40);
+                doc.setTextColor(255); doc.setFontSize(18); doc.setFont("helvetica", "bold"); 
+                doc.text("Resumen de Cobertura", 20, 48);
+                
+                const dc = analysisResults?.datosClave || {};
+                const grid = [
+                    { l: "SUMA ASEGURADA", v: dc.sumaAsegurada, key: 'sum' }, 
+                    { l: "DEDUCIBLE", v: dc.deducible, key: 'ded' },
+                    { l: "COASEGURO", v: { pesos: dc.coaseguro }, key: 'coa' }, 
+                    { l: "TOPE COASEGURO", v: dc.topeCoaseguro, key: 'top' },
+                    { l: "NIVEL HOSPITALARIO", v: { pesos: dc.serieHospitalaria }, key: 'niv' }, 
+                    { l: "TABULADOR MÉDICO", v: dc.thq, key: 'tab' }
+                ];
+                
+                let gy = 58;
+                grid.forEach((item, i) => {
+                    const col = i % 2; if (i > 0 && col === 0) gy += 28;
+                    const sx = 20 + (col * 88);
+                    doc.setFillColor(...colorCard); doc.roundedRect(sx, gy, 83, 24, 3, 3, 'F');
+                    doc.setFontSize(7); doc.setTextColor(148, 163, 184); 
+                    doc.setFont("helvetica", "normal");
+                    doc.text(item.l, sx + 5, gy + 7);
+                    
+                    const valueStr = String(item.v?.pesos || "N/A");
+                    doc.setFontSize(11); doc.setTextColor(255);
+                    doc.text(valueStr, sx + 5, gy + 15);
+                    
+                    // Lógica estricta para evitar duplicidad de UMAMs
+                    if(item.v?.umam && item.key !== 'top' && item.key !== 'coa' && item.key !== 'niv') {
+                        // Comprobamos si el valor principal ya menciona UMAM o UMA
+                        const hasUmamInMain = valueStr.toUpperCase().includes("UMAM") || valueStr.toUpperCase().includes(" UMA");
+                        
+                        if (!hasUmamInMain) {
+                            // Limpiamos el valor de umam por si la IA ya le puso la etiqueta
+                            let umamClean = String(item.v.umam).toUpperCase().replace("UMAMS", "").replace("UMAM", "").trim();
+                            if (umamClean && umamClean !== "N/A" && umamClean !== "UNDEFINED") {
+                                doc.setFontSize(8); doc.setTextColor(...colorAccent);
+                                doc.text(`${umamClean} UMAMs`, sx + 5, gy + 20);
+                            }
+                        }
                     }
-                    y += 5.5;
                 });
-                return y;
-            };
 
-            const headerAgentLogo = async (page) => {
-                await addLogo(processedAgentLogo, 20, 15, 80, 40); 
-            };
+                doc.setFont("helvetica", "bold"); doc.setTextColor(255); doc.setFontSize(18); 
+                doc.text("Principales Beneficios", 20, gy + 42);
+                let by = gy + 50;
+                (analysisResults?.beneficios || []).slice(0, 18).forEach(b => {
+                    if (by + 11 < h - 20) {
+                        doc.setFillColor(...colorCard); doc.roundedRect(20, by, w - 40, 9, 2, 2, 'F');
+                        doc.setFillColor(...colorAccent); doc.circle(26, by + 4.5, 1, 'F');
+                        doc.setTextColor(226, 232, 240); doc.setFontSize(9);
+                        doc.setFont("helvetica", "normal");
+                        doc.text(String(b).substring(0, 90), 32, by + 6);
+                        by += 10.5;
+                    }
+                });
 
-            // --- PÁGINA 1: PORTADA ---
-            doc.setFillColor(...colorDark); doc.rect(0, 0, w, h, 'F');
-            await headerAgentLogo(1);
-            const activeCarrierLogo = carrierLogoManual || (fileContents[0].type.includes('image') ? fileContents[0].data : null);
-            await addLogo(activeCarrierLogo, w - 20, h - 45, 65, 30, 'right');
-            doc.setTextColor(255); doc.setFontSize(11); doc.setFont("helvetica", "bold");
-            doc.text("ESTRATEGIA DE PROTECCIÓN PATRIMONIAL", 20, 115);
-            doc.setFontSize(48); doc.text(type.toUpperCase(), 20, 140, { maxWidth: 160 });
-            doc.setFontSize(12); doc.setTextColor(148, 163, 184); doc.text("DISEÑADO EXCLUSIVAMENTE PARA:", 20, 185);
-            doc.setFontSize(32); doc.setTextColor(255); doc.text(String(analysisResults.cliente?.nombre || "CLIENTE").toUpperCase(), 20, 200);
+                // PÁGINA 3
+                doc.addPage();
+                doc.setFillColor(...colorDark); doc.rect(0, 0, w, h, 'F');
+                if (processedAgentLogo) await addLogo(processedAgentLogo, 20, 15, 80, 40);
+                doc.setFont("helvetica", "bold"); doc.setTextColor(255); doc.setFontSize(18); 
+                doc.text("Protecciones con Costo", 20, 52);
+                let pcy = 60;
+                (analysisResults?.proteccionesConCosto || []).forEach(p => {
+                    doc.setFillColor(...colorCard); doc.roundedRect(20, pcy, w - 40, 9, 2, 2, 'F');
+                    doc.setFillColor(...colorAccent); doc.circle(26, pcy + 4.5, 1, 'F');
+                    doc.setTextColor(226, 232, 240); doc.setFontSize(9);
+                    doc.setFont("helvetica", "normal");
+                    doc.text(String(p).substring(0, 85), 32, pcy + 6);
+                    pcy += 11;
+                });
 
-            // --- PÁGINA 2: COBERTURAS ---
-            doc.addPage();
-            doc.setFillColor(...colorDark); doc.rect(0, 0, w, h, 'F');
-            await headerAgentLogo(2);
-            doc.setTextColor(255); doc.setFontSize(18); doc.setFont("helvetica", "bold"); 
-            doc.text("Resumen de Cobertura", 20, 48);
-            
-            const dc = analysisResults.datosClave || {};
-            const grid = [
-                { l: "SUMA ASEGURADA", v: dc.sumaAsegurada, key: 'sum' }, 
-                { l: "DEDUCIBLE", v: dc.deducible, key: 'ded' },
-                { l: "COASEGURO", v: { pesos: dc.coaseguro }, key: 'coa' }, 
-                { l: "TOPE COASEGURO", v: dc.topeCoaseguro, key: 'top' },
-                { l: "NIVEL HOSPITALARIO", v: { pesos: dc.serieHospitalaria }, key: 'niv' }, 
-                { l: "TABULADOR MÉDICO", v: dc.thq, key: 'tab' }
-            ];
-            
-            let gy = 58;
-            grid.forEach((item, i) => {
-                const col = i % 2; if (i > 0 && col === 0) gy += 28;
-                const sx = 20 + (col * 88);
-                doc.setFillColor(...colorCard); doc.roundedRect(sx, gy, 83, 24, 3, 3, 'F');
-                doc.setFontSize(7); doc.setTextColor(148, 163, 184); 
-                doc.setFont("helvetica", "normal");
-                doc.text(item.l, sx + 5, gy + 7);
-                
-                doc.setFontSize(11); doc.setTextColor(255);
-                doc.setFont("helvetica", "normal");
-                doc.text(String(item.v?.pesos || "N/A"), sx + 5, gy + 15);
-                
-                if(item.v?.umam && item.key !== 'top') {
-                    doc.setFontSize(8); doc.setTextColor(...colorAccent);
-                    doc.text(`${item.v.umam} UMAMs`, sx + 5, gy + 20);
+                let nextY = pcy + 15;
+                if (premium) {
+                    doc.setFillColor(...colorAccent); doc.roundedRect(20, nextY, w - 40, 22, 5, 5, 'F');
+                    doc.setTextColor(255); doc.setFontSize(10); 
+                    doc.text("INVERSIÓN TOTAL ANUAL (NETA)", 30, nextY + 8);
+                    doc.setFontSize(22); 
+                    doc.text(String(premium), 30, nextY + 17);
+                    nextY += 45; 
                 }
-            });
 
-            doc.setFont("helvetica", "bold"); doc.setTextColor(255); doc.setFontSize(18); 
-            doc.text("Principales Beneficios", 20, gy + 42);
-            let by = gy + 50;
-            (analysisResults.beneficios || []).slice(0, 10).forEach(b => {
-                doc.setFillColor(...colorCard); doc.roundedRect(20, by, w - 40, 9, 2, 2, 'F');
-                doc.setFillColor(...colorAccent); doc.circle(26, by + 4.5, 1, 'F');
-                doc.setTextColor(226, 232, 240); doc.setFontSize(9);
+                doc.setFont("helvetica", "bold"); doc.setTextColor(255); doc.setFontSize(16); 
+                doc.text("Socio Estratégico", 20, nextY);
+                nextY += 12;
+                if (activeCarrierLogo) {
+                    const d = await addLogo(activeCarrierLogo, w/2, nextY, 65, 30, 'center');
+                    nextY += (d.h || 30) + 12;
+                }
+                doc.setTextColor(180, 190, 205); doc.setFontSize(10);
                 doc.setFont("helvetica", "normal");
-                doc.text(b.substring(0, 85), 32, by + 6);
-                by += 11;
-            });
+                nextY = drawJustifiedText(analysisResults?.resumenAseguradora?.parrafo1, 22, nextY, w-44);
+                nextY = drawJustifiedText(analysisResults?.resumenAseguradora?.parrafo2, 22, nextY + 6, w-44);
 
-            // --- PÁGINA 3: PROTECCIONES Y SOCIO ---
-            doc.addPage();
-            doc.setFillColor(...colorDark); doc.rect(0, 0, w, h, 'F');
-            await headerAgentLogo(3);
-            doc.setFont("helvetica", "bold"); doc.setTextColor(255); doc.setFontSize(18); 
-            doc.text("Protecciones con Costo", 20, 52);
-            let pcy = 60;
-            (analysisResults.proteccionesConCosto || []).forEach(p => {
-                doc.setFillColor(...colorCard); doc.roundedRect(20, pcy, w - 40, 9, 2, 2, 'F');
-                doc.setFillColor(...colorAccent); doc.circle(26, pcy + 4.5, 1, 'F');
-                doc.setTextColor(226, 232, 240); doc.setFontSize(9);
-                doc.setFont("helvetica", "normal");
-                doc.text(p.substring(0, 85), 32, pcy + 6);
-                pcy += 11;
-            });
-
-            let nextY = pcy + 15;
-            if (premium) {
-                doc.setFillColor(...colorAccent); doc.roundedRect(20, nextY, w - 40, 22, 5, 5, 'F');
-                doc.setTextColor(255); doc.setFontSize(10); 
-                doc.setFont("helvetica", "normal");
-                doc.text("INVERSIÓN TOTAL ANUAL (NETA)", 30, nextY + 8);
-                doc.setFontSize(22); 
-                doc.text(String(premium), 30, nextY + 17);
-                nextY += 45; 
+                const whiteAreaY = Math.max(nextY + 15, h * 0.76);
+                const whiteAreaHeight = h - whiteAreaY;
+                doc.setFillColor(...colorAccent); doc.rect(0, whiteAreaY - 1, w, 1, 'F');
+                doc.setFillColor(255); doc.rect(0, whiteAreaY, w, whiteAreaHeight, 'F');
+                const centerY = whiteAreaY + (whiteAreaHeight / 2);
+                doc.setTextColor(15, 23, 42); doc.setFontSize(14); doc.setFont("helvetica", "bold");
+                doc.text(agent.toUpperCase(), w/2, centerY - 6, { align: 'center' });
+                doc.setFontSize(10); doc.setFont("helvetica", "normal"); doc.setTextColor(100, 116, 139);
+                doc.text("Agente de Seguros Certificado", w/2, centerY, { align: 'center' });
+                doc.setFontSize(10); doc.setTextColor(51, 65, 85);
+                doc.text(`${email}  •  ${phone}`, w/2, centerY + 8, { align: 'center' });
+                
+                doc.save(`Propuesta_${analysisResults?.cliente?.nombre || "Cliente"}.pdf`);
+            } catch (error) {
+                console.error("Fallo generacion PDF:", error);
+                alert("Error al construir el PDF. Intenta con un archivo de cotización diferente.");
             }
-
-            doc.setFont("helvetica", "bold"); doc.setTextColor(255); doc.setFontSize(16); 
-            doc.text("Socio Estratégico", 20, nextY);
-            nextY += 12;
-            if (activeCarrierLogo) {
-                const d = await addLogo(activeCarrierLogo, w/2, nextY, 65, 30, 'center');
-                nextY += (d.h || 30) + 12;
-            }
-            doc.setTextColor(180, 190, 205); doc.setFontSize(10);
-            doc.setFont("helvetica", "normal");
-            nextY = drawJustifiedText(analysisResults.resumenAseguradora?.parrafo1, 22, nextY, w-44);
-            nextY = drawJustifiedText(analysisResults.resumenAseguradora?.parrafo2, 22, nextY + 6, w-44);
-
-            // --- ÁREA DE IDENTIDAD DEL AGENTE CENTRADA (HOJA 3) ---
-            // Definimos un área blanca generosa al final
-            const whiteAreaY = Math.max(nextY + 15, h * 0.76);
-            const whiteAreaHeight = h - whiteAreaY;
-            
-            // Línea de separación estética
-            doc.setFillColor(...colorAccent); doc.rect(0, whiteAreaY - 1, w, 1, 'F');
-            
-            // Fondo blanco
-            doc.setFillColor(255); doc.rect(0, whiteAreaY, w, whiteAreaHeight, 'F');
-            
-            // Cálculo del centro del área blanca para posicionamiento vertical
-            const centerY = whiteAreaY + (whiteAreaHeight / 2);
-            
-            // Textos centrados vertical y horizontalmente en el área blanca
-            doc.setTextColor(15, 23, 42); 
-            doc.setFontSize(14); 
-            doc.setFont("helvetica", "bold");
-            doc.text(agent.toUpperCase(), w/2, centerY - 6, { align: 'center' });
-            
-            doc.setFontSize(10); 
-            doc.setFont("helvetica", "normal"); 
-            doc.setTextColor(100, 116, 139);
-            doc.text("Agente de Seguros Certificado", w/2, centerY, { align: 'center' });
-            
-            doc.setFontSize(10); 
-            doc.setTextColor(51, 65, 85);
-            doc.text(`${email}  •  ${phone}`, w/2, centerY + 8, { align: 'center' });
-            
-            doc.save(`Propuesta_${analysisResults.cliente?.nombre || "Cliente"}.pdf`);
         }
     </script>
 </body>
